@@ -12,11 +12,14 @@ const MessageList = ({ messages }) => {
 
   return (
     <>
-      {messages.map((message) => (
-        <div key={message.id} className={`message ${message.role}`}>
+      {messages.map((message, index) => (
+        <div
+          key={message.id ?? index}
+          className={`message ${message.role}${message.streaming ? ' streaming' : ''}`}
+        >
           <div className="message-bubble">
             {message.content}
-            {message.timestamp && (
+            {message.timestamp && !message.streaming && (
               <div className="message-time">
                 {new Date(message.timestamp).toLocaleTimeString()}
               </div>
