@@ -20,6 +20,6 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Database
+# Database (保留 schema.sql，忽略其他 sql 文件)
 *.sql
-database/*.sql
+!database/schema.sql
