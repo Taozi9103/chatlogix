@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import axios from 'axios';
+import http from '@/lib/http';
 import MessageList from '@/components/MessageList';
 import ConversationList from '@/components/ConversationList';
 import RoleSelector from '@/components/RoleSelector';
@@ -15,8 +15,9 @@ const DEFAULT_ROLE = {
 };
 
 function rolesFromResponseBody(data: any) {
-  if (!data || !Array.isArray(data.roles)) return [];
-  return data.roles;
+  const roles = data?.data?.roles ?? data?.roles;
+  if (!Array.isArray(roles)) return [];
+  return roles;
 }
 
 function normalizeHistoryMessage(msg: any, index: number) {
@@ -30,6 +31,7 @@ function normalizeHistoryMessage(msg: any, index: number) {
 }
 
 const Chat = () => {
+  const [mounted, setMounted] = useState(false);
   const [conversations, setConversations] = useState<any[]>([]);
   const [currentConversation, setCurrentConversation] = useState<any>(null);
   const [currentRole, setCurrentRole] = useState(DEFAULT_ROLE);
@@ -44,20 +46,14 @@ const Chat = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
-  const user = (() => {
-    if (typeof window === 'undefined') return {};
-    try {
-      const userData = localStorage.getItem('user');
-      return userData && userData !== 'undefined' ? JSON.parse(userData) : {};
-    } catch {
-      return {};
-    }
-  })();
-
   const getToken = () => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('token');
   };
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     const token = getToken();
@@ -65,8 +61,6 @@ const Chat = () => {
       router.push('/login');
       return;
     }
-
-    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     
     fetchConversations();
     fetchRoles();
@@ -74,10 +68,11 @@ const Chat = () => {
 
   const fetchConversations = async () => {
     try {
-      const response = await axios.get('/api/conversations');
+      const response = await http.get('/api/conversations');
       console.log('会话列表响应:', response.data);
-      if (response.data.success) {
-        const list = response.data.conversations || [];
+      const body = response.data;
+      if (body?.success) {
+        const list = body.data?.conversations || [];
         setConversations(list);
         setCurrentConversation((prev: any) => {
           if (list.length === 0) return null;
@@ -96,9 +91,14 @@ const Chat = () => {
   const fetchRoles = async () => {
     setRolesLoading(true);
     try {
-      const response = await axios.get('/api/chat/roles');
+      const response = await http.get('/api/chat/roles');
       console.log('角色列表响应:', response.data);
-      const list = rolesFromResponseBody(response.data);
+      const body = response.data;
+      if (!body?.success) {
+        setRoles([]);
+        return;
+      }
+      const list = rolesFromResponseBody(body);
       setRoles(list);
       if (list.length > 0) {
         setCurrentRole((prev) => {
@@ -116,16 +116,18 @@ const Chat = () => {
 
   const loadConversationMessages = useCallback(async (conversationId: number, page = 1) => {
     try {
-      const response = await axios.get(`/api/conversations/${conversationId}`, {
+      const response = await http.get(`/api/conversations/${conversationId}`, {
         params: { page, pageSize: 20 }
       });
 
       console.log('会话消息响应:', response.data);
 
-      const data = response.data;
-      if (!data || !Array.isArray(data.messages)) {
+      const body = response.data;
+      if (!body?.success) {
         return;
       }
+      const data = body.data;
+      if (!data || !Array.isArray(data.messages)) return;
 
       const historyMessages = data.messages.map((msg: any, i: number) => normalizeHistoryMessage(msg, i));
 
@@ -148,8 +150,10 @@ const Chat = () => {
       const roleId = conv?.roleId ?? conv?.role_id;
       if (conv && roleId) {
         try {
-          const roleResponse = await axios.get('/api/chat/roles');
-          const list = rolesFromResponseBody(roleResponse.data);
+          const roleResponse = await http.get('/api/chat/roles');
+          const rb = roleResponse.data;
+          if (!rb?.success) return;
+          const list = rolesFromResponseBody(rb);
           if (list.length > 0) {
             setRoles(list);
             const role = list.find((r: any) => r.id === roleId);
@@ -192,13 +196,15 @@ const Chat = () => {
 
   const handleNewConversation = async () => {
     try {
-      const response = await axios.post('/api/conversations', {
+      const response = await http.post('/api/conversations', {
         title: '新对话',
         roleId: currentRole?.id || 'assistant'
       });
       console.log('新建会话响应:', response.data);
-      if (response.data.success) {
-        const newConversation = response.data.conversation;
+      const body = response.data;
+      if (body?.success) {
+        const newConversation = body.data?.conversation;
+        if (!newConversation) return;
         setConversations(prev => [newConversation, ...prev]);
         setCurrentConversation(newConversation);
       }
@@ -214,7 +220,7 @@ const Chat = () => {
 
   const handleDeleteConversation = async (conversationId: number) => {
     try {
-      await axios.delete(`/api/conversations/${conversationId}`);
+      await http.delete(`/api/conversations/${conversationId}`);
       setConversations(prev => prev.filter(c => c.id !== conversationId));
       if (currentConversation?.id === conversationId) {
         const remaining = conversations.filter(c => c.id !== conversationId);
@@ -228,6 +234,30 @@ const Chat = () => {
   const handleRoleChange = (role: any) => {
     console.log('切换角色:', role);
     setCurrentRole(role);
+  };
+
+  const handleToggleFavorite = async (conversation: any) => {
+    const conversationId = conversation?.id;
+    if (conversationId == null) return;
+
+    const nextIsFavorite = !Boolean(conversation.isFavorite);
+    setConversations((prev) =>
+      prev.map((c) => (c.id === conversationId ? { ...c, isFavorite: nextIsFavorite } : c))
+    );
+    setCurrentConversation((prev: any) =>
+      prev && prev.id === conversationId ? { ...prev, isFavorite: nextIsFavorite } : prev
+    );
+
+    try {
+      if (nextIsFavorite) {
+        await http.post(`/api/conversations/${conversationId}/favorite`);
+      } else {
+        await http.delete(`/api/conversations/${conversationId}/favorite`);
+      }
+      await fetchConversations();
+    } catch (err) {
+      await fetchConversations();
+    }
   };
 
   const sendMessage = async () => {
@@ -373,13 +403,13 @@ const Chat = () => {
       const activeId = convId ?? resolvedConvId;
       if (priorMessageCount === 0 && activeId && wasPlaceholderNewChat) {
         const newTitle = text.substring(0, 20);
-        await axios.put(`/api/conversations/${activeId}`, {
+        await http.put(`/api/conversations/${activeId}`, {
           title: newTitle
         });
         setConversations((prev) =>
           prev.map((c) => (c.id === activeId ? { ...c, title: newTitle } : c))
         );
-        setCurrentConversation((prev) =>
+        setCurrentConversation((prev: any) =>
           prev && prev.id === activeId ? { ...prev, title: newTitle } : prev
         );
       }
@@ -419,7 +449,9 @@ const Chat = () => {
     router.push('/login');
   };
 
-  console.log('当前状态:', { currentConversation, currentRole, conversations });
+  if (!mounted) {
+    return null;
+  }
 
   return (
     <div className="chat-layout">
@@ -429,6 +461,7 @@ const Chat = () => {
         onNewConversation={handleNewConversation}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDeleteConversation}
+        onToggleFavorite={handleToggleFavorite}
       />
 
       <div className="chat-main">

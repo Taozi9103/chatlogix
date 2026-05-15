@@ -139,6 +139,26 @@ body {
   align-items: center;
 }
 
+.conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.conversation-item .fav-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  color: #f6e05e;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+}
+
+.conversation-item .fav-btn.active {
+  opacity: 1;
+}
+
 .conversation-item:hover {
   background: #4a5568;
 }
@@ -157,7 +177,8 @@ body {
   padding: 0.25rem;
 }
 
-.conversation-item:hover .delete-btn {
+.conversation-item:hover .delete-btn,
+.conversation-item:hover .fav-btn {
   opacity: 1;
 }
 

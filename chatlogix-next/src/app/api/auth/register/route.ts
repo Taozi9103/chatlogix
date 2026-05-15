@@ -1,23 +1,29 @@
-import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
-import db from '@/lib/db';
+import db, { ensureDBReady } from '@/lib/db';
+import { ApiError, ok, parseJson, withApi } from '@/lib/api';
 
-export async function POST(request: NextRequest) {
-  const { username, password } = await request.json();
+export const POST = withApi(async (request) => {
+  const body = await parseJson(request);
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  const password = typeof body?.password === 'string' ? body.password : '';
 
   if (!username || !password) {
-    return NextResponse.json({ code: 400, msg: '用户名和密码不能为空' });
+    throw new ApiError(400, 'VALIDATION_ERROR', '用户名和密码不能为空');
   }
 
   const hashedPassword = bcrypt.hashSync(password, 10);
 
   try {
-    const [result]: any = await db.query('INSERT INTO users (username, password) VALUES (?, ?)', [username, hashedPassword]);
-    return NextResponse.json({ code: 200, msg: '注册成功', data: { userId: result.insertId, username } });
+    await ensureDBReady();
+    const [result]: any = await db.query(
+      'INSERT INTO users (username, password) VALUES (?, ?)',
+      [username, hashedPassword]
+    );
+    return ok(request, { userId: result.insertId, username });
   } catch (err: any) {
-    if (err.code === 'ER_DUP_ENTRY') {
-      return NextResponse.json({ code: 409, msg: '用户名已存在' });
+    if (err?.code === 'ER_DUP_ENTRY') {
+      throw new ApiError(409, 'DUPLICATE', '用户名已存在');
     }
-    return NextResponse.json({ code: 500, msg: '注册失败', error: err.message });
+    throw err;
   }
-}
+});

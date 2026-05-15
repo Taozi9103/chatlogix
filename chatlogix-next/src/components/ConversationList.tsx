@@ -4,6 +4,8 @@ interface Conversation {
   id: number;
   title: string;
   roleId?: string;
+  isFavorite?: boolean;
+  tagIds?: number[];
   createdAt?: string;
   updatedAt?: string;
 }
@@ -14,6 +16,7 @@ interface ConversationListProps {
   onNewConversation: () => void;
   onSelectConversation: (conversation: Conversation) => void;
   onDeleteConversation: (conversationId: number) => void;
+  onToggleFavorite: (conversation: Conversation) => void;
 }
 
 const ConversationList: React.FC<ConversationListProps> = ({
@@ -22,6 +25,7 @@ const ConversationList: React.FC<ConversationListProps> = ({
   onNewConversation,
   onSelectConversation,
   onDeleteConversation,
+  onToggleFavorite,
 }) => {
   return (
     <div className="sidebar">
@@ -40,15 +44,30 @@ const ConversationList: React.FC<ConversationListProps> = ({
             onClick={() => onSelectConversation(conversation)}
           >
             <span>{conversation.title}</span>
-            <button
-              className="delete-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDeleteConversation(conversation.id);
-              }}
-            >
-              🗑️
-            </button>
+            <div className="conversation-actions">
+              <button
+                className={`fav-btn ${conversation.isFavorite ? 'active' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavorite(conversation);
+                }}
+                aria-label={conversation.isFavorite ? '取消收藏' : '收藏'}
+                title={conversation.isFavorite ? '取消收藏' : '收藏'}
+              >
+                {conversation.isFavorite ? '⭐' : '☆'}
+              </button>
+              <button
+                className="delete-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteConversation(conversation.id);
+                }}
+                aria-label="删除会话"
+                title="删除会话"
+              >
+                🗑️
+              </button>
+            </div>
           </div>
         ))}
       </div>

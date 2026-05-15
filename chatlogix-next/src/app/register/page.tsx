@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import axios from 'axios';
+import http from '@/lib/http';
 
 const Register = () => {
   const [username, setUsername] = useState('');
@@ -18,19 +18,19 @@ const Register = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post('/api/auth/register', {
+      const response = await http.post('/api/auth/register', {
         username,
         password
       });
 
-      const { code } = response.data;
-      if (code === 200) {
+      const body = response.data;
+      if (body?.success) {
         router.push('/login');
       } else {
-        setError(response.data.msg || '注册失败');
+        setError(body?.error?.message || '注册失败');
       }
     } catch (err: any) {
-      setError(err.response?.data?.msg || '注册失败，请稍后重试');
+      setError(err.response?.data?.error?.message || err.message || '注册失败，请稍后重试');
     } finally {
       setLoading(false);
     }

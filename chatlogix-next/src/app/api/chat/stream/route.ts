@@ -1,24 +1,26 @@
 import { NextRequest } from 'next/server';
 import { getAuthUser } from '@/lib/auth';
-import db from '@/lib/db';
+import db, { ensureDBReady } from '@/lib/db';
 import { getRoleById } from '@/lib/roles';
+import { fail } from '@/lib/api';
 
 export async function POST(request: NextRequest) {
   const user = getAuthUser(request);
   if (!user) {
-    return new Response(JSON.stringify({ error: '未授权' }), { status: 401 });
+    return fail(request, { code: 'UNAUTHORIZED', message: '未授权' }, { status: 401 });
   }
 
   const { message, conversationId, roleId = 'assistant' } = await request.json();
   const userId = user.userId;
 
   if (!message) {
-    return new Response(JSON.stringify({ error: '消息不能为空' }), { status: 400 });
+    return fail(request, { code: 'VALIDATION_ERROR', message: '消息不能为空' }, { status: 400 });
   }
 
   let convId = conversationId;
 
   try {
+    await ensureDBReady();
     if (!convId) {
       const [result]: any = await db.query(
         'INSERT INTO conversations (user_id, title, role_id) VALUES (?, ?, ?)',
@@ -72,15 +74,19 @@ export async function POST(request: NextRequest) {
       try {
         detail = await upstream.text();
       } catch (_) {}
-      return new Response(JSON.stringify({
-        error: '模型服务错误',
-        status: upstream.status,
-        detail: detail.slice(0, 2000)
-      }), { status: 502 });
+      return fail(
+        request,
+        {
+          code: 'MODEL_ERROR',
+          message: '模型服务错误',
+          detail: { status: upstream.status, detail: detail.slice(0, 2000) },
+        },
+        { status: 502 }
+      );
     }
 
     if (!upstream.body) {
-      return new Response(JSON.stringify({ error: '模型无流式响应体' }), { status: 500 });
+      return fail(request, { code: 'MODEL_ERROR', message: '模型无流式响应体' }, { status: 500 });
     }
 
     const encoder = new TextEncoder();

@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import axios from 'axios';
+import http from '@/lib/http';
 
 const Login = () => {
   const [username, setUsername] = useState('');
@@ -18,21 +18,22 @@ const Login = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post('/api/auth/login', {
+      const response = await http.post('/api/auth/login', {
         username,
         password
       });
 
-      const { code, data } = response.data;
-      if (code === 200) {
-        const { token, userId, username } = data;
-        localStorage.setItem('token', token);
-        localStorage.setItem('user', JSON.stringify({ userId, username }));
+      const body = response.data;
+      if (!body?.success) {
+        throw new Error(body?.error?.message || '登录失败');
       }
+      const { token, user } = body.data;
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
       
       router.push('/');
     } catch (err: any) {
-      setError(err.response?.data?.error || '登录失败，请稍后重试');
+      setError(err.response?.data?.error?.message || err.message || '登录失败，请稍后重试');
     } finally {
       setLoading(false);
     }

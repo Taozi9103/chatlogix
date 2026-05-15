@@ -24,6 +24,15 @@ const db = mysql.createPool({
   connectionLimit: 10,
 });
 
+let initOnce: Promise<void> | null = null;
+
+export async function ensureDBReady() {
+  if (!initOnce) {
+    initOnce = initDB();
+  }
+  return initOnce;
+}
+
 export async function initDB() {
   try {
     await db.query(`CREATE DATABASE IF NOT EXISTS ${DB_NAME}`);
@@ -79,6 +88,72 @@ export async function initDB() {
         FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
       )
     `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS tags (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        name VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE KEY uq_tags_user_name (user_id, name)
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS conversation_tags (
+        conversation_id INT NOT NULL,
+        tag_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (conversation_id, tag_id),
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS conversation_favorites (
+        conversation_id INT NOT NULL,
+        user_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, conversation_id),
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    const isDupIndex = (e: any) =>
+      e.errno === 1061 || e.code === 'ER_DUP_KEYNAME' || e.code === 'ER_DUP_INDEX';
+
+    try {
+      await db.query(
+        'CREATE INDEX idx_conversations_user_updated_id ON conversations (user_id, updated_at, id)'
+      );
+    } catch (e: any) {
+      if (!isDupIndex(e)) throw e;
+    }
+
+    try {
+      await db.query('CREATE INDEX idx_tags_user_name ON tags (user_id, name)');
+    } catch (e: any) {
+      if (!isDupIndex(e)) throw e;
+    }
+
+    try {
+      await db.query(
+        'CREATE INDEX idx_conversation_tags_tag_conversation ON conversation_tags (tag_id, conversation_id)'
+      );
+    } catch (e: any) {
+      if (!isDupIndex(e)) throw e;
+    }
+
+    try {
+      await db.query(
+        'CREATE INDEX idx_conversation_favorites_user_conversation ON conversation_favorites (user_id, conversation_id)'
+      );
+    } catch (e: any) {
+      if (!isDupIndex(e)) throw e;
+    }
 
     const [convResult]: any = await db.query(`SELECT COUNT(*) as count FROM conversations`);
     if (convResult[0].count === 0) {
