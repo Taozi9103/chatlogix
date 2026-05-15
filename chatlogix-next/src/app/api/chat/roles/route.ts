@@ -1,7 +1,6 @@
-import { getAllRoles } from '@/lib/roles';
-import { ok, withApi } from '@/lib/api';
+import { NextRequest } from 'next/server';
+import { forwardJson } from '@/lib/pythonProxy';
 
-export const GET = withApi(async (request) => {
-  const roles = getAllRoles();
-  return ok(request, { roles });
-});
+export async function GET(request: NextRequest) {
+  return forwardJson(request, '/v1/chat/roles');
+}

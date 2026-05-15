@@ -1,8 +1,6 @@
 import { NextRequest } from 'next/server';
-import { initDB } from '@/lib/db';
-import { ok, withApi } from '@/lib/api';
+import { forwardJson } from '@/lib/pythonProxy';
 
-export const GET = withApi(async (request: NextRequest) => {
-  await initDB();
-  return ok(request, { message: '数据库初始化成功' });
-});
+export async function GET(request: NextRequest) {
+  return forwardJson(request, '/v1/init-db');
+}
