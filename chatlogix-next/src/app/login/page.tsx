@@ -4,17 +4,31 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import http from '@/lib/http';
+import { loginSchema, validateOrThrow, ValidationError } from '@/lib/validation';
 
 const Login = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setFieldErrors({});
+
+    // ---- zod 参数校验 ----
+    try {
+      validateOrThrow(loginSchema, { username, password });
+    } catch (err: any) {
+      if (err instanceof ValidationError) {
+        setError(err.messages[0]);
+      }
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -50,7 +64,10 @@ const Login = () => {
               type="text"
               placeholder="用户名"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => {
+                setUsername(e.target.value);
+                if (fieldErrors.username) setFieldErrors({});
+              }}
               required
             />
           </div>
@@ -59,7 +76,10 @@ const Login = () => {
               type="password"
               placeholder="密码"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                if (fieldErrors.password) setFieldErrors({});
+              }}
               required
             />
           </div>

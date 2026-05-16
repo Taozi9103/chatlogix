@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import http from '@/lib/http';
+import { registerSchema, validateOrThrow, ValidationError } from '@/lib/validation';
 
 const Register = () => {
   const [username, setUsername] = useState('');
@@ -15,6 +16,17 @@ const Register = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    // ---- zod 参数校验 ----
+    try {
+      validateOrThrow(registerSchema, { username, password });
+    } catch (err: any) {
+      if (err instanceof ValidationError) {
+        setError(err.messages[0]);
+      }
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -45,7 +57,7 @@ const Register = () => {
           <div className="form-group">
             <input
               type="text"
-              placeholder="用户名"
+              placeholder="用户名（2-50个字符）"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
@@ -54,7 +66,7 @@ const Register = () => {
           <div className="form-group">
             <input
               type="password"
-              placeholder="密码"
+              placeholder="密码（至少6个字符）"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required

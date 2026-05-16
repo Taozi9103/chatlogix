@@ -2,18 +2,37 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 import bcrypt
 import jwt
 
+from pydantic import ValidationError as PydanticValidationError
+
 from api import ApiError, fail, ok, parse_json
 from auth import AuthError, verify_bearer_token
 from chat_service import send_message as graph_send_message, stream_reply_messages
 from db import ensure_schema_once, execute, query
 from roles import all_roles
+from schemas import (
+    RegisterRequest,
+    LoginRequest,
+    SendMessageRequest,
+    StreamMessageRequest,
+    CreateConversationRequest,
+    UpdateConversationRequest,
+    CreateTagRequest,
+    SetTagsRequest,
+    PaginationParams,
+)
+from idempotency import (
+    check_idempotency,
+    mark_idempotency_processing,
+    save_idempotency_response,
+    delete_idempotency_key,
+)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -43,6 +62,22 @@ async def _auth_error_handler(request: Request, exc: AuthError):
     return fail(request, "UNAUTHORIZED", str(exc), 401)
 
 
+@app.exception_handler(PydanticValidationError)
+async def _pydantic_validation_handler(request: Request, exc: PydanticValidationError):
+    errors = []
+    for e in exc.errors():
+        field = ".".join(str(x) for x in e.get("loc", []))
+        msg = e.get("msg", "参数错误")
+        errors.append({"field": field, "message": msg})
+    return fail(
+        request,
+        "VALIDATION_ERROR",
+        "参数校验失败",
+        status_code=422,
+        detail=errors,
+    )
+
+
 @app.get("/health")
 async def health(request: Request):
     return ok(request, {"status": "ok"})
@@ -60,12 +95,9 @@ async def chat_roles(request: Request):
 
 
 @app.post("/v1/auth/register")
-async def auth_register(request: Request):
-    body = await parse_json(request)
-    username = str(body.get("username") or "").strip()
-    password = str(body.get("password") or "")
-    if not username or not password:
-        raise ApiError(400, "VALIDATION_ERROR", "用户名和密码不能为空")
+async def auth_register(request: Request, body: RegisterRequest):
+    username = body.username.strip()
+    password = body.password
 
     ensure_schema_once()
 
@@ -79,12 +111,9 @@ async def auth_register(request: Request):
 
 
 @app.post("/v1/auth/login")
-async def auth_login(request: Request):
-    body = await parse_json(request)
-    username = str(body.get("username") or "").strip()
-    password = str(body.get("password") or "")
-    if not username or not password:
-        raise ApiError(400, "VALIDATION_ERROR", "用户名和密码不能为空")
+async def auth_login(request: Request, body: LoginRequest):
+    username = body.username.strip()
+    password = body.password
 
     ensure_schema_once()
 
@@ -100,8 +129,6 @@ async def auth_login(request: Request):
         ok_pwd = False
     if not ok_pwd:
         raise ApiError(401, "INVALID_CREDENTIALS", "用户名或密码错误")
-
-    import os
 
     secret = os.getenv("JWT_SECRET")
     if not secret:
@@ -123,53 +150,37 @@ async def auth_login(request: Request):
 
 
 @app.post("/v1/chat/send")
-async def chat_send(request: Request):
+async def chat_send(request: Request, body: SendMessageRequest):
     user = verify_bearer_token(request.headers.get("authorization"))
-    body = await parse_json(request)
-    message = str(body.get("message") or "").strip()
-    role_id = str(body.get("roleId") or "assistant")
-    conversation_id = body.get("conversationId")
-
-    if not message:
-        raise ApiError(400, "VALIDATION_ERROR", "消息不能为空")
 
     ensure_schema_once()
     result = graph_send_message(
         user_id=user.user_id,
-        message=message,
-        conversation_id=int(conversation_id) if conversation_id else None,
-        role_id=role_id,
+        message=body.message,
+        conversation_id=body.conversationId,
+        role_id=body.roleId,
     )
     return ok(request, result)
 
 
 @app.post("/v1/chat/stream")
-async def chat_stream(request: Request):
+async def chat_stream(request: Request, body: StreamMessageRequest):
     user = verify_bearer_token(request.headers.get("authorization"))
-    body = await parse_json(request)
-    message = str(body.get("message") or "").strip()
-    role_id = str(body.get("roleId") or "assistant")
-    conversation_id = body.get("conversationId")
-
-    if not message:
-        raise ApiError(400, "VALIDATION_ERROR", "消息不能为空")
-
-    ensure_schema_once()
 
     conv_id: int
-    if conversation_id:
-        conv_id = int(conversation_id)
+    if body.conversationId:
+        conv_id = int(body.conversationId)
     else:
         conv_id = int(
             execute(
                 "INSERT INTO conversations (user_id, title, role_id) VALUES (%s, %s, %s)",
-                (user.user_id, (message[:20] or "新对话"), role_id),
+                (user.user_id, (body.message[:20] or "新对话"), body.roleId),
             )
         )
 
     execute(
         "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
-        (conv_id, user.user_id, "user", message),
+        (conv_id, user.user_id, "user", body.message),
     )
 
     rows = query(
@@ -184,7 +195,7 @@ async def chat_stream(request: Request):
         await asyncio.sleep(0)
         full = ""
         try:
-            async for token in stream_reply_messages(role_id=role_id, history=history):
+            async for token in stream_reply_messages(role_id=body.roleId, history=history):
                 full += token
                 yield f"data: {json_dumps({'content': token, 'conversationId': conv_id})}\n\n"
                 await asyncio.sleep(0)
@@ -199,7 +210,7 @@ async def chat_stream(request: Request):
                 )
                 execute(
                     "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP, role_id = %s WHERE id = %s",
-                    (role_id, conv_id),
+                    (body.roleId, conv_id),
                 )
             yield "data: [DONE]\n\n"
             await asyncio.sleep(0)
@@ -322,22 +333,19 @@ async def conversations_list(request: Request):
 
 
 @app.post("/v1/conversations")
-async def conversations_create(request: Request):
+async def conversations_create(request: Request, body: CreateConversationRequest):
     user = verify_bearer_token(request.headers.get("authorization"))
-    body = await parse_json(request)
-    title = str(body.get("title") or "新对话").strip() or "新对话"
-    role_id = str(body.get("roleId") or "assistant")
     ensure_schema_once()
 
     conv_id = int(
         execute(
             "INSERT INTO conversations (user_id, title, role_id) VALUES (%s, %s, %s)",
-            (user.user_id, title, role_id),
+            (user.user_id, body.title, body.roleId),
         )
     )
     return ok(
         request,
-        {"conversation": {"id": conv_id, "title": title, "roleId": role_id}},
+        {"conversation": {"id": conv_id, "title": body.title, "roleId": body.roleId}},
         status_code=201,
     )
 
@@ -389,17 +397,13 @@ async def conversations_detail(request: Request, conversation_id: int):
 
 
 @app.put("/v1/conversations/{conversation_id}")
-async def conversations_update(request: Request, conversation_id: int):
+async def conversations_update(request: Request, conversation_id: int, body: UpdateConversationRequest):
     user = verify_bearer_token(request.headers.get("authorization"))
-    body = await parse_json(request)
-    title = str(body.get("title") or "").strip()
-    if not title:
-        raise ApiError(400, "VALIDATION_ERROR", "标题不能为空")
     ensure_schema_once()
 
     execute(
         "UPDATE conversations SET title = %s WHERE id = %s AND user_id = %s",
-        (title, conversation_id, user.user_id),
+        (body.title, conversation_id, user.user_id),
     )
     return ok(request, {"message": "会话标题更新成功"})
 
@@ -438,15 +442,8 @@ async def favorite_remove(request: Request, conversation_id: int):
 
 
 @app.post("/v1/conversations/{conversation_id}/tags")
-async def conversation_set_tags(request: Request, conversation_id: int):
+async def conversation_set_tags(request: Request, conversation_id: int, body: SetTagsRequest):
     user = verify_bearer_token(request.headers.get("authorization"))
-    body = await parse_json(request)
-    raw = body.get("tagIds")
-    if not isinstance(raw, list) or not raw:
-        raise ApiError(400, "VALIDATION_ERROR", "tagIds 不能为空")
-    tag_ids = sorted({int(x) for x in raw if str(x).isdigit() and int(x) > 0})
-    if not tag_ids:
-        raise ApiError(400, "VALIDATION_ERROR", "tagIds 不能为空")
 
     ensure_schema_once()
     conv = query(
@@ -456,6 +453,7 @@ async def conversation_set_tags(request: Request, conversation_id: int):
     if not conv:
         raise ApiError(404, "NOT_FOUND", "会话不存在")
 
+    tag_ids = body.tagIds
     placeholders = ",".join(["%s"] * len(tag_ids))
     allowed = query(
         f"SELECT id FROM tags WHERE user_id = %s AND id IN ({placeholders})",
@@ -508,14 +506,8 @@ async def tags_list(request: Request):
 
 
 @app.post("/v1/tags")
-async def tags_create(request: Request):
+async def tags_create(request: Request, body: CreateTagRequest):
     user = verify_bearer_token(request.headers.get("authorization"))
-    body = await parse_json(request)
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise ApiError(400, "VALIDATION_ERROR", "标签名不能为空")
-    if len(name) > 50:
-        raise ApiError(400, "VALIDATION_ERROR", "标签名不能超过 50 个字符")
 
     ensure_schema_once()
     tag_id = int(
@@ -525,14 +517,14 @@ async def tags_create(request: Request):
             VALUES (%s, %s)
             ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)
             """,
-            (user.user_id, name),
+            (user.user_id, body.name),
         )
     )
     rows = query(
         "SELECT id, name, created_at as createdAt FROM tags WHERE id = %s AND user_id = %s",
         (tag_id, user.user_id),
     )
-    tag = rows[0] if rows else {"id": tag_id, "name": name}
+    tag = rows[0] if rows else {"id": tag_id, "name": body.name}
     return ok(request, {"tag": tag})
 
 
