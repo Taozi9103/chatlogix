@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const PY_BASE = process.env.PY_SERVICE_URL || 'http://127.0.0.1:8000';
+const PY_BASE = process.env.PY_SERVICE_URL || 'http://127.0.0.1:8002';
 
 export async function POST(request: NextRequest) {
   const url = new URL('/v1/chat/stream', PY_BASE);

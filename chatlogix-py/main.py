@@ -194,8 +194,34 @@ async def chat_stream(request: Request, body: StreamMessageRequest):
         yield f"data: {json_dumps({'type': 'meta', 'conversationId': conv_id})}\n\n"
         await asyncio.sleep(0)
         full = ""
+        extra_user_message = None
         try:
-            async for token in stream_reply_messages(role_id=body.roleId, history=history):
+            # 工具调用：天气查询（在调用大模型前执行）
+            from tools.weather import detect_weather_intent, query_weather, build_tool_prompt
+            city_en = detect_weather_intent(body.message)
+            if city_en is not None:
+                weather_data = await query_weather(city_en)
+                if weather_data:
+                    extra_user_message = (
+                        f"【以下是调用天气工具获取的实时数据，请基于此数据直接回答用户，不要说无法获取】\n"
+                        f"城市：{weather_data.get('city', city_en)}\n"
+                        f"天气：{weather_data.get('condition', '?')}\n"
+                        f"温度：{weather_data.get('temperature', '?')}（体感 {weather_data.get('feels_like', '?')}）\n"
+                        f"湿度：{weather_data.get('humidity', '?')}\n"
+                        f"风向风速：{weather_data.get('wind', '?')}\n"
+                        f"气压：{weather_data.get('pressure', '?')}\n"
+                        f"能见度：{weather_data.get('visibility', '?')}"
+                    )
+                    tool_log_text = f"[工具] 天气查询：{weather_data.get('city', city_en)} {weather_data.get('condition', '?')} {weather_data.get('temperature', '?')}"
+                    yield f"data: {json_dumps({'type': 'tool_log', 'message': tool_log_text})}\n\n"
+                    await asyncio.sleep(0)
+
+            async for token in stream_reply_messages(
+                role_id=body.roleId,
+                history=history,
+                user_message=body.message,
+                extra_user_message=extra_user_message,
+            ):
                 full += token
                 yield f"data: {json_dumps({'content': token, 'conversationId': conv_id})}\n\n"
                 await asyncio.sleep(0)

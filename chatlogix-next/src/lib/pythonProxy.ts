@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 
-const PY_BASE = process.env.PY_SERVICE_URL || 'http://127.0.0.1:8000';
+const PY_BASE = process.env.PY_SERVICE_URL || 'http://127.0.0.1:8002';
 
 export function pythonUrl(path: string, req?: NextRequest) {
   const url = new URL(path, PY_BASE);

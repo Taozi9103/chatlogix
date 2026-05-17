@@ -7,6 +7,7 @@ import httpx
 
 from db import execute, query
 from roles import get_role
+from tools.weather import detect_weather_intent, query_weather, build_tool_prompt
 
 
 def _deepseek_base_url() -> tuple[str, str]:
@@ -74,6 +75,20 @@ def build_chat_messages(role_id: str, history: list[dict]) -> list[dict]:
     return msgs
 
 
+def await_query_weather(city_en: str) -> dict[str, Any] | None:
+    """同步版天气查询（给 send_message 用的）"""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        # 已有事件循环，创建新任务
+        return asyncio.run_coroutine_threadsafe(query_weather(city_en), loop).result()
+    else:
+        return asyncio.run(query_weather(city_en))
+
+
 def send_message(*, user_id: int, message: str, conversation_id: int | None, role_id: str) -> dict:
     conv_id = conversation_id
     if not conv_id:
@@ -82,6 +97,19 @@ def send_message(*, user_id: int, message: str, conversation_id: int | None, rol
     _save_message(conv_id, user_id, "user", message)
     history = _load_history(conv_id)
     prompt_messages = build_chat_messages(role_id, history)
+
+    # ---- 工具调用：天气查询 ----
+    city_en = detect_weather_intent(message)
+    print(f"[SERVICE] send_message: weather city_en={city_en}")
+    if city_en is not None:
+        weather_data = await_query_weather(city_en)
+        if weather_data:
+            tool_text = build_tool_prompt(city_en, weather_data)
+            print(f"[SERVICE] got weather data, inserting tool prompt: {weather_data}")
+            # 把工具结果作为 system prompt 追加
+            prompt_messages.insert(0, {"role": "system", "content": tool_text})
+        else:
+            print(f"[SERVICE] query_weather returned None")
 
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
@@ -124,7 +152,7 @@ def send_message(*, user_id: int, message: str, conversation_id: int | None, rol
     return {"reply": reply, "conversationId": conv_id}
 
 
-async def stream_reply_messages(*, role_id: str, history: list[dict]) -> AsyncGenerator[str, None]:
+async def stream_reply_messages(*, role_id: str, history: list[dict], user_message: str | None = None, extra_user_message: str | None = None) -> AsyncGenerator[str, None]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Missing required env: DEEPSEEK_API_KEY")
@@ -132,6 +160,23 @@ async def stream_reply_messages(*, role_id: str, history: list[dict]) -> AsyncGe
     host, base_path = _deepseek_base_url()
     api_url = f"https://{host}{base_path}/v1/chat/completions"
     prompt_messages = build_chat_messages(role_id, history)
+
+    # 如果传入了额外的用户消息（如工具调用结果），追加到历史最后（作为用户提供的上下文）
+    if extra_user_message:
+        prompt_messages.append({"role": "user", "content": extra_user_message})
+
+    # ---- 工具调用：天气查询（向后兼容保留，但 main.py 里也会做） ----
+    if user_message:
+        city_en = detect_weather_intent(user_message)
+        print(f"[SERVICE] stream: weather city_en={city_en}")
+        if city_en is not None:
+            weather_data = await query_weather(city_en)
+            if weather_data:
+                tool_text = build_tool_prompt(city_en, weather_data)
+                print(f"[SERVICE] stream: got weather data: {weather_data}")
+                prompt_messages.insert(0, {"role": "system", "content": tool_text})
+            else:
+                print(f"[SERVICE] stream: query_weather returned None")
 
     payload = {
         "model": "deepseek-chat",

@@ -1,14 +1,12 @@
-'use client';
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
-import http from '@/lib/http';
-import { sendMessageSchema, createConversationSchema, validateOrThrow, ValidationError } from '@/lib/validation';
-import { getGlobalQueue } from '@/lib/requestQueue';
-import MessageList from '@/components/MessageList';
-import ConversationList from '@/components/ConversationList';
-import RoleSelector from '@/components/RoleSelector';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import MessageList from './MessageList';
+import ConversationList from './ConversationList';
+import RoleSelector from './RoleSelector';
+import '../App.css';
 
+/** 与后端默认角色一致，避免首屏请求未完成时无角色、无选择器 */
 const DEFAULT_ROLE = {
   id: 'assistant',
   name: 'AI助手',
@@ -16,13 +14,14 @@ const DEFAULT_ROLE = {
   description: '全能AI助手，帮您解答各种问题',
 };
 
-function rolesFromResponseBody(data: any) {
-  const roles = data?.data?.roles ?? data?.roles;
-  if (!Array.isArray(roles)) return [];
-  return roles;
+/** 解析 GET /api/chat/roles 响应体：{ roles: [...] }，兼容旧版 { success, roles } */
+function rolesFromResponseBody(data) {
+  if (!data || !Array.isArray(data.roles)) return [];
+  return data.roles;
 }
 
-function normalizeHistoryMessage(msg: any, index: number) {
+/** 会话详情单条消息：兼容 createdAt / created_at、无 id */
+function normalizeHistoryMessage(msg, index) {
   const ts = msg.createdAt ?? msg.created_at ?? null;
   return {
     id: msg.id != null ? msg.id : `hist-${index}-${ts ?? ''}-${msg.role ?? 'x'}`,
@@ -32,71 +31,64 @@ function normalizeHistoryMessage(msg: any, index: number) {
   };
 }
 
+const API_BASE = 'http://localhost:5001';
+
 const Chat = () => {
-  const [mounted, setMounted] = useState(false);
-  const [conversations, setConversations] = useState<any[]>([]);
-  const [currentConversation, setCurrentConversation] = useState<any>(null);
+  const [conversations, setConversations] = useState([]);
+  const [currentConversation, setCurrentConversation] = useState(null);
   const [currentRole, setCurrentRole] = useState(DEFAULT_ROLE);
-  const [roles, setRoles] = useState<any[]>([]);
+  /** 与 /api/chat/roles 的 { roles } 一致，供角色弹窗使用 */
+  const [roles, setRoles] = useState([]);
   const [rolesLoading, setRolesLoading] = useState(true);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [pagination, setPagination] = useState<any>(null);
+  const [pagination, setPagination] = useState(null);
   const [hasMore, setHasMore] = useState(false);
-  const [inputError, setInputError] = useState<string | null>(null);
-  const router = useRouter();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const navigate = useNavigate();
+  const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
 
-  const getToken = () => {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem('token');
-  };
+  const user = (() => {
+    try {
+      const userData = localStorage.getItem('user');
+      return userData && userData !== 'undefined' ? JSON.parse(userData) : {};
+    } catch {
+      return {};
+    }
+  })();
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const getToken = () => localStorage.getItem('token');
 
+  // 初始化
   useEffect(() => {
     const token = getToken();
     if (!token) {
-      router.push('/login');
+      navigate('/login');
       return;
     }
 
+    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    
     fetchConversations();
     fetchRoles();
-  }, [router]);
+  }, [navigate]);
 
-  // 切换会话时取消正在进行的请求
-  useEffect(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const queue = getGlobalQueue();
-    if (currentConversation) {
-      queue.cancelByConversation(currentConversation.id);
-    } else {
-      queue.cancelAll();
-    }
-  }, [currentConversation?.id]);
-
+  // 获取会话列表
   const fetchConversations = async () => {
     try {
-      const response = await http.get('/api/conversations');
-      const body = response.data;
-      if (body?.success) {
-        const list = body.data?.conversations || [];
+      const response = await axios.get(`${API_BASE}/api/conversations`);
+      console.log('会话列表响应:', response.data);
+      if (response.data.success) {
+        const list = response.data.conversations || [];
         setConversations(list);
-        setCurrentConversation((prev: any) => {
+        setCurrentConversation((prev) => {
           if (list.length === 0) return null;
-          if (prev && list.some((c: any) => c.id === prev.id)) return prev;
+          if (prev && list.some((c) => c.id === prev.id)) return prev;
           return list[0];
         });
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('获取会话列表失败:', err);
       if (err.response?.status === 401) {
         logout();
@@ -104,20 +96,17 @@ const Chat = () => {
     }
   };
 
+  // 获取角色列表（弹窗选项来自 /api/chat/roles 的 roles 数组）
   const fetchRoles = async () => {
     setRolesLoading(true);
     try {
-      const response = await http.get('/api/chat/roles');
-      const body = response.data;
-      if (!body?.success) {
-        setRoles([]);
-        return;
-      }
-      const list = rolesFromResponseBody(body);
+      const response = await axios.get(`${API_BASE}/api/chat/roles`);
+      console.log('角色列表响应:', response.data);
+      const list = rolesFromResponseBody(response.data);
       setRoles(list);
       if (list.length > 0) {
         setCurrentRole((prev) => {
-          const match = list.find((r: any) => r.id === prev?.id);
+          const match = list.find((r) => r.id === prev?.id);
           return match || list[0];
         });
       }
@@ -129,18 +118,21 @@ const Chat = () => {
     }
   };
 
-  const loadConversationMessages = useCallback(async (conversationId: number, page = 1) => {
+  // 加载会话历史消息
+  const loadConversationMessages = useCallback(async (conversationId, page = 1) => {
     try {
-      const response = await http.get(`/api/conversations/${conversationId}`, {
+      const response = await axios.get(`${API_BASE}/api/conversations/${conversationId}`, {
         params: { page, pageSize: 20 }
       });
 
-      const body = response.data;
-      if (!body?.success) return;
-      const data = body.data;
-      if (!data || !Array.isArray(data.messages)) return;
+      console.log('会话消息响应:', response.data);
 
-      const historyMessages = data.messages.map((msg: any, i: number) => normalizeHistoryMessage(msg, i));
+      const data = response.data;
+      if (!data || !Array.isArray(data.messages)) {
+        return;
+      }
+
+      const historyMessages = data.messages.map((msg, i) => normalizeHistoryMessage(msg, i));
 
       if (page === 1) {
         setMessages(historyMessages);
@@ -161,13 +153,11 @@ const Chat = () => {
       const roleId = conv?.roleId ?? conv?.role_id;
       if (conv && roleId) {
         try {
-          const roleResponse = await http.get('/api/chat/roles');
-          const rb = roleResponse.data;
-          if (!rb?.success) return;
-          const list = rolesFromResponseBody(rb);
+          const roleResponse = await axios.get(`${API_BASE}/api/chat/roles`);
+          const list = rolesFromResponseBody(roleResponse.data);
           if (list.length > 0) {
             setRoles(list);
-            const role = list.find((r: any) => r.id === roleId);
+            const role = list.find((r) => r.id === roleId);
             if (role) {
               setCurrentRole(role);
             }
@@ -181,19 +171,24 @@ const Chat = () => {
     }
   }, []);
 
+  // 切换会话时加载消息
   useEffect(() => {
     if (currentConversation) {
+      console.log('切换到会话:', currentConversation);
       setMessages([]);
       loadConversationMessages(currentConversation.id);
     }
   }, [currentConversation, loadConversationMessages]);
 
+  // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // 滚动加载更多历史消息
   const handleScroll = () => {
     if (!messagesContainerRef.current) return;
+
     const { scrollTop } = messagesContainerRef.current;
     if (scrollTop === 0 && hasMore && !loading && pagination) {
       const nextPage = pagination.page + 1;
@@ -203,37 +198,34 @@ const Chat = () => {
     }
   };
 
+  // 新建会话
   const handleNewConversation = async () => {
     try {
-      const validatedData = validateOrThrow(createConversationSchema, {
+      const response = await axios.post(`${API_BASE}/api/conversations`, {
         title: '新对话',
         roleId: currentRole?.id || 'assistant'
       });
-
-      const response = await http.post('/api/conversations', validatedData);
-      const body = response.data;
-      if (body?.success) {
-        const newConversation = body.data?.conversation;
-        if (!newConversation) return;
+      console.log('新建会话响应:', response.data);
+      if (response.data.success) {
+        const newConversation = response.data.conversation;
         setConversations(prev => [newConversation, ...prev]);
         setCurrentConversation(newConversation);
       }
-    } catch (err: any) {
-      if (err instanceof ValidationError) {
-        console.error('创建会话参数校验失败:', err.messages);
-      } else {
-        console.error('创建会话失败:', err);
-      }
+    } catch (err) {
+      console.error('创建会话失败:', err);
     }
   };
 
-  const handleSelectConversation = (conversation: any) => {
+  // 选择会话
+  const handleSelectConversation = (conversation) => {
+    console.log('选择会话:', conversation);
     setCurrentConversation(conversation);
   };
 
-  const handleDeleteConversation = async (conversationId: number) => {
+  // 删除会话
+  const handleDeleteConversation = async (conversationId) => {
     try {
-      await http.delete(`/api/conversations/${conversationId}`);
+      await axios.delete(`${API_BASE}/api/conversations/${conversationId}`);
       setConversations(prev => prev.filter(c => c.id !== conversationId));
       if (currentConversation?.id === conversationId) {
         const remaining = conversations.filter(c => c.id !== conversationId);
@@ -244,55 +236,17 @@ const Chat = () => {
     }
   };
 
-  const handleRoleChange = (role: any) => {
+  // 切换角色
+  const handleRoleChange = (role) => {
+    console.log('切换角色:', role);
     setCurrentRole(role);
   };
 
-  const handleToggleFavorite = async (conversation: any) => {
-    const conversationId = conversation?.id;
-    if (conversationId == null) return;
-
-    const nextIsFavorite = !Boolean(conversation.isFavorite);
-    setConversations((prev) =>
-      prev.map((c) => (c.id === conversationId ? { ...c, isFavorite: nextIsFavorite } : c))
-    );
-    setCurrentConversation((prev: any) =>
-      prev && prev.id === conversationId ? { ...prev, isFavorite: nextIsFavorite } : prev
-    );
-
-    try {
-      if (nextIsFavorite) {
-        await http.post(`/api/conversations/${conversationId}/favorite`);
-      } else {
-        await http.delete(`/api/conversations/${conversationId}/favorite`);
-      }
-      await fetchConversations();
-    } catch (err) {
-      await fetchConversations();
-    }
-  };
-
+  // 发送消息（SSE 流式，POST /api/chat/stream）
   const sendMessage = async () => {
+    if (!input.trim() || loading) return;
+
     const text = input.trim();
-    if (!text) return;
-
-    // ---- 参数校验（zod） ----
-    try {
-      validateOrThrow(sendMessageSchema, {
-        message: text,
-        conversationId: currentConversation?.id || null,
-        roleId: currentRole?.id || 'assistant',
-      });
-    } catch (err: any) {
-      if (err instanceof ValidationError) {
-        setInputError(err.messages[0]);
-        setTimeout(() => setInputError(null), 3000);
-      }
-      return;
-    }
-
-    if (loading) return;
-
     const convId = currentConversation?.id;
     const priorMessageCount = messages.length;
     const wasPlaceholderNewChat = currentConversation?.title === '新对话';
@@ -310,57 +264,33 @@ const Chat = () => {
 
     const assistantStreamId = Date.now() + 1;
     let resolvedConvId = convId;
-    let reader: any;
-
-    // ---- 通过请求队列发送 ----
-    const queue = getGlobalQueue();
-    const dedupKey = convId
-      ? `conv_${convId}_${text.substring(0, 50)}`
-      : `new_${Date.now()}`;
-
-    abortControllerRef.current = new AbortController();
-
-    // 生成幂等键：纯数字+时间戳，保证 header 合法
-    const idempotencyKey = `ik_${Date.now()}_${assistantStreamId}`;
+    let reader;
 
     try {
-      const payload: any = {
+      const payload = {
         message: text,
         roleId: currentRole?.id || 'assistant'
       };
       if (convId) payload.conversationId = convId;
 
-      const fetchResponse = await queue.enqueue<Response>({
-        id: `send_${assistantStreamId}`,
-        dedupKey,
-        priority: 1,
-        timeout: 60000,
-        signal: abortControllerRef.current.signal,
-        execute: async () => {
-          const response = await fetch('/api/chat/stream', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${getToken()}`,
-              Accept: 'text/event-stream',
-              'X-Idempotency-Key': idempotencyKey,
-            },
-            body: JSON.stringify(payload),
-            signal: abortControllerRef.current?.signal,
-          });
-          return response;
+      const response = await fetch(`${API_BASE}/api/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getToken()}`,
+          Accept: 'text/event-stream'
         },
+        body: JSON.stringify(payload)
       });
 
-      // ---- 校验响应 ----
-      if (fetchResponse.status === 401) {
+      if (response.status === 401) {
         logout();
         return;
       }
 
-      if (!fetchResponse.ok) {
-        const errText = await fetchResponse.text();
-        let errMsg = errText.slice(0, 300) || `请求失败 (${fetchResponse.status})`;
+      if (!response.ok) {
+        const errText = await response.text();
+        let errMsg = errText.slice(0, 300) || `请求失败 (${response.status})`;
         try {
           const j = JSON.parse(errText);
           if (j.error) errMsg = typeof j.error === 'string' ? j.error : j.error.message || errMsg;
@@ -368,11 +298,10 @@ const Chat = () => {
         throw new Error(errMsg);
       }
 
-      if (!fetchResponse.body) {
+      if (!response.body) {
         throw new Error('浏览器不支持流式读取响应');
       }
 
-      // ---- 添加 assistant 占位消息 ----
       setMessages((prev) => [
         ...prev,
         {
@@ -380,12 +309,11 @@ const Chat = () => {
           role: 'assistant',
           content: '',
           timestamp: null,
-          streaming: true,
-        },
+          streaming: true
+        }
       ]);
 
-      // ---- 读取 SSE 流 ----
-      reader = fetchResponse.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let sseDone = false;
@@ -398,7 +326,7 @@ const Chat = () => {
         while ((sep = buf.indexOf('\n\n')) >= 0) {
           const rawEvent = buf.slice(0, sep);
           buf = buf.slice(sep + 2);
-          const dataLine = rawEvent.split('\n').find((l: string) => l.startsWith('data:'));
+          const dataLine = rawEvent.split('\n').find((l) => l.startsWith('data:'));
           if (!dataLine) continue;
           const raw = dataLine.replace(/^data:\s*/i, '').trim();
           if (raw === '[DONE]') {
@@ -417,9 +345,6 @@ const Chat = () => {
           if (j.type === 'meta' && j.conversationId != null) {
             resolvedConvId = j.conversationId;
           }
-          if (j.type === 'tool_log') {
-            console.log('%c' + (j.message || ''), 'color:#22c55e;font-weight:bold');
-          }
           if (j.content) {
             setMessages((prev) =>
               prev.map((m) =>
@@ -433,21 +358,23 @@ const Chat = () => {
         if (sseDone) break;
       }
 
-      // ---- 流结束，取消 streaming 状态 ----
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantStreamId
-            ? { ...m, streaming: false, timestamp: m.timestamp || new Date().toISOString() }
+            ? {
+                ...m,
+                streaming: false,
+                timestamp: m.timestamp || new Date().toISOString()
+              }
             : m
         )
       );
 
-      // ---- 新会话处理 ----
       if (!convId && resolvedConvId) {
         const newConv = {
           id: resolvedConvId,
           title: text.substring(0, 20) || '新对话',
-          roleId: currentRole?.id || 'assistant',
+          roleId: currentRole?.id || 'assistant'
         };
         setConversations((prev) => {
           if (prev.some((c) => c.id === resolvedConvId)) return prev;
@@ -459,19 +386,17 @@ const Chat = () => {
       const activeId = convId ?? resolvedConvId;
       if (priorMessageCount === 0 && activeId && wasPlaceholderNewChat) {
         const newTitle = text.substring(0, 20);
-        await http.put(`/api/conversations/${activeId}`, { title: newTitle });
+        await axios.put(`${API_BASE}/api/conversations/${activeId}`, {
+          title: newTitle
+        });
         setConversations((prev) =>
           prev.map((c) => (c.id === activeId ? { ...c, title: newTitle } : c))
         );
-        setCurrentConversation((prev: any) =>
+        setCurrentConversation((prev) =>
           prev && prev.id === activeId ? { ...prev, title: newTitle } : prev
         );
       }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        console.log('请求已取消');
-        return;
-      }
+    } catch (err) {
       console.error('发送失败:', err);
       setMessages((prev) => {
         const withoutStream = prev.filter((m) => m.id !== assistantStreamId);
@@ -482,8 +407,8 @@ const Chat = () => {
             role: 'assistant',
             content: '抱歉，发生了错误：' + (err.message || '请稍后重试'),
             timestamp: new Date().toISOString(),
-            isError: true,
-          },
+            isError: true
+          }
         ];
       });
     } finally {
@@ -491,31 +416,25 @@ const Chat = () => {
         reader?.releaseLock();
       } catch (_) {}
       setLoading(false);
-      abortControllerRef.current = null;
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  // 处理回车键
+  const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
   };
 
+  // 退出登录
   const logout = () => {
-    const queue = getGlobalQueue();
-    queue.clear();
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    router.push('/login');
+    navigate('/login');
   };
 
-  if (!mounted) {
-    return null;
-  }
+  console.log('当前状态:', { currentConversation, currentRole, conversations });
 
   return (
     <div className="chat-layout">
@@ -525,7 +444,6 @@ const Chat = () => {
         onNewConversation={handleNewConversation}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDeleteConversation}
-        onToggleFavorite={handleToggleFavorite}
       />
 
       <div className="chat-main">
@@ -546,12 +464,16 @@ const Chat = () => {
           </div>
         </div>
 
-        <div
+        <div 
           className="messages-container"
           ref={messagesContainerRef}
           onScroll={handleScroll}
         >
-          {hasMore && <div className="load-more-indicator">加载更多...</div>}
+          {hasMore && (
+            <div className="load-more-indicator">
+              加载更多...
+            </div>
+          )}
           <MessageList messages={messages} />
           <div ref={messagesEndRef} />
         </div>
@@ -560,17 +482,13 @@ const Chat = () => {
           <input
             type="text"
             value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              if (inputError) setInputError(null);
-            }}
+            onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder="输入消息... (按 Enter 发送；无会话时发送将自动创建)"
             disabled={loading}
           />
-          {inputError && <div className="input-error-tip">{inputError}</div>}
-          <button
-            onClick={sendMessage}
+          <button 
+            onClick={sendMessage} 
             className="send-button"
             disabled={loading || !input.trim()}
           >
